@@ -798,7 +798,8 @@ ssize_t mepdbg_plugmod_t::HandleIddEvent(ssize_t code, va_list va) {
             debapp_attrs_t *out_pattrs = va_arg(va, debapp_attrs_t *);
             if (out_pattrs) {
                 out_pattrs->addrsize = 4;
-                out_pattrs->platform = "mep";
+                // Use IDA's built-in .gdb platform key in exceptions.cfg so codes 4/5/11 map cleanly without user config edits.
+                out_pattrs->platform = "gdb";
                 out_pattrs->is_be = false;
             }
             return DRC_OK;
