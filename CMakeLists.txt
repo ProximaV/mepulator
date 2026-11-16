@@ -68,6 +68,14 @@ else()
     target_link_libraries(mepulator_core PUBLIC Threads::Threads)
 endif()
 
+if(MSVC)
+    file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" MEPULATOR_SRC_PREFIX_NATIVE)
+    target_compile_options(mepulator_core PUBLIC
+        "/d1trimfile:${MEPULATOR_SRC_PREFIX_NATIVE}"
+    )
+    add_link_options($<$<CONFIG:Release>:/PDBALTPATH:%_PDB%>)
+endif()
+
 add_executable(mepulator src/main.cpp)
 target_link_libraries(mepulator PRIVATE mepulator_core)
 
@@ -76,7 +84,12 @@ target_link_libraries(mepulator_tests PRIVATE mepulator_core)
 enable_testing()
 add_test(NAME mepulator_tests COMMAND mepulator_tests)
 
-set(IDA_SDK_DIR "C:/Users/HomeUser/source/repos/ida-sdk-main/src" CACHE PATH "Path to IDA SDK src directory")
+if(DEFINED ENV{IDA_SDK_DIR})
+    set(_DEFAULT_IDA_SDK_DIR "$ENV{IDA_SDK_DIR}")
+else()
+    set(_DEFAULT_IDA_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../ida-sdk-main/src")
+endif()
+set(IDA_SDK_DIR "${_DEFAULT_IDA_SDK_DIR}" CACHE PATH "Path to IDA SDK src directory")
 
 if(EXISTS "${IDA_SDK_DIR}/include/idd.hpp" AND EXISTS "${IDA_SDK_DIR}/lib/x64_win_vc_64/ida.lib")
     add_library(mepdbg SHARED src/ida_dbg_plugin.cpp)

@@ -18,7 +18,11 @@ import ida_segment
 import ida_ua
 import idc
 
-REPORT_PATH = r"c:\Users\HomeUser\source\repos\vita\F00D\mepulator\build\ida_headless_report.txt"
+REPORT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "build",
+    "ida_headless_report.txt",
+)
 
 
 def eval_idc(expr_str):

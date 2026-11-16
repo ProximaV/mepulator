@@ -29,25 +29,25 @@ PS Vita F00D / Toshiba MeP C5 emulator, standalone GDB RSP server, and integrate
 
 ## Building (Windows / Visual Studio 2022)
 
-1. Build `toshiba-mep-ida` processor module (`mep.dll`):
+1. Build `toshiba-mep-ida` processor module (`mep.dll`) from IDA SDK `src\module\toshiba-mep-ida`:
    ```powershell
-   & "C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\amd64\MSBuild.exe" `
-     c:\Users\HomeUser\source\repos\ida-sdk-main\src\module\toshiba-mep-ida\mep.vcxproj `
+   MSBuild.exe ..\..\..\ida-sdk-main\src\module\toshiba-mep-ida\mep.vcxproj `
      /p:Configuration=Release64 /p:Platform=x64
    ```
-   Copy `mep.dll` into IDA's `procs\` directory (for example `%APPDATA%\Hex-Rays\IDA Pro\procs\mep.dll`).
+   Copy `Release64\mep.dll` into IDA's `procs\` directory (for example `%APPDATA%\Hex-Rays\IDA Pro\procs\mep.dll`).
 
-2. Build `mepulator`, `mepulator_tests`, and `mepdbg.dll`:
+2. Build `mepulator`, `mepulator_tests`, and `mepdbg.dll` from this directory:
    ```powershell
-   $cmake = "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-   & $cmake -S c:\Users\HomeUser\source\repos\vita\F00D\mepulator -B c:\Users\HomeUser\source\repos\vita\F00D\mepulator\build -G "Visual Studio 17 2022" -A x64
-   & $cmake --build c:\Users\HomeUser\source\repos\vita\F00D\mepulator\build --config Release
+   cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+   cmake --build build --config Release
    ```
+   (Set `IDA_SDK_DIR` via `-DIDA_SDK_DIR=<ida-sdk>\src` if the IDA SDK is not located at `..\..\..\ida-sdk-main\src`.)
+
    Run the unit test suite:
    ```powershell
-   c:\Users\HomeUser\source\repos\vita\F00D\mepulator\build\Release\mepulator_tests.exe
+   .\build\Release\mepulator_tests.exe
    ```
-   Copy `build\Release\mepdbg.dll` into IDA's `plugins\` directory (for example `%APPDATA%\Hex-Rays\IDA Pro\plugins\mepdbg.dll`).
+   Copy `.\build\Release\mepdbg.dll` into IDA's `plugins\` directory (for example `%APPDATA%\Hex-Rays\IDA Pro\plugins\mepdbg.dll`).
 
 ## Usage in IDA Pro
 1. Open a PS Vita F00D binary or database (`BootROM`, `second_loader`, `secure_kernel`, etc.) in IDA Pro with the `MeP` processor selected.
@@ -56,19 +56,17 @@ PS Vita F00D / Toshiba MeP C5 emulator, standalone GDB RSP server, and integrate
 
 ## Headless IDA Verification
 ```powershell
-& "C:\Program Files\IDA Professional 9.5\idat.exe" -A `
-  -S"c:\Users\HomeUser\source\repos\vita\F00D\mepulator\tests\ida_headless_test.py" `
-  "C:\Users\HomeUser\source\repos\vita\F00D\105_f00d.i64"
+idat.exe -A -S".\tests\ida_headless_test.py" .\105_f00d.i64
 ```
 
 ## CLI & Standalone GDB Server
 ```powershell
 # Run cached-base F00D payload headless:
-mepulator.exe --rom 1692_f00d.bin --base 0x00800000 --pc 0x00800100 --headless --max-steps 10000
+mepulator.exe --rom f00d.bin --base 0x00800000 --pc 0x00800100 --headless --max-steps 10000
 
-# Run uncached startup image (BootROM / second_loader) headless:
-mepulator.exe --rom PCH-1001-bootrom-retail.bin --base 0x00040000 --pc 0x00040000 --headless --max-steps 50000
+# Run uncached startup image (BootROM / loader) headless:
+mepulator.exe --rom retail.bin --base 0x00040000 --pc 0x00040000 --headless --max-steps 50000
 
 # Run GDB RSP server on port 1234:
-mepulator.exe --rom 1692_f00d.bin --gdb --gdb-port 1234
+mepulator.exe --rom f00d.bin --gdb --gdb-port 1234
 ```
