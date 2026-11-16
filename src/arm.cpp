@@ -1,7 +1,8 @@
 #include "arm.h"
 
-#include <stdio.h>
-#include <unistd.h>
+#include <chrono>
+#include <cstdio>
+#include <thread>
 
 #include "devices/armcomm.h"
 #include "memory.h"
@@ -64,7 +65,9 @@ ARM::ARM(ARMComm *comm_, Memory *mem_):
 
 void ARM::StartUp() {
 	TRACE("starting up...\n");
-	while (comm->Read32(0) != 257);
+	while (comm->Read32(0) != 257) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 	TRACE("wait for 0x101 done\n");
 }
 
@@ -74,7 +77,9 @@ void ARM::SetSharedBuffer() {
 	TRACE("set shared_buffer to 0x%x\n", SHARED_BUFFER);
 	comm->Write32(0x10, SHARED_BUFFER | 1);
 	TRACE("wait...");
-	while (!(ret = comm->Read32(0)));
+	while (!(ret = comm->Read32(0))) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 	TRACE("wait done, 0x%x\n", ret);
 }
 
@@ -85,8 +90,10 @@ void ARM::SetRvk() {
 
 	// prepare rvk list
 	FILE *fin = fopen("prog_rvk.srvk", "rb");
-	if (!fin)
-		FATAL("cannot open prog_rvk.srvk\n");
+	if (!fin) {
+		LOG_ERR("cannot open prog_rvk.srvk");
+		return;
+	}
 	uint32_t rvk_sz = fread(rvk_buf, 1, RVK_BUF_SIZE, fin);
 	fclose(fin);
 	mem->Write(RVK_PA, rvk_sz, rvk_buf);
@@ -104,8 +111,12 @@ void ARM::SetRvk() {
 
 	TRACE("set_rvk\n");
 	comm->Write32(0x10, 0x80A01);
-	while ((ret = comm->Read32(0x10))); // commit
-	while (!(ret = comm->Read32(0)));
+	while ((ret = comm->Read32(0x10))) { // commit
+		std::this_thread::yield();
+	}
+	while (!(ret = comm->Read32(0))) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 	TRACE("set_rvk ret: 0x%x\n", ret);
 }
 
@@ -119,11 +130,14 @@ void ARM::SetTracebuf() {
 
 	TRACE("wait 1\n");
 	comm->Write32(0x10, 0x80901);
-	while (comm->Read32(0x10));
+	while (comm->Read32(0x10)) {
+		std::this_thread::yield();
+	}
 	TRACE("wait 1 done\n");
 
 	do {
 		ret = comm->Read32(0);
+		if (!(uint16_t)ret) std::this_thread::yield();
 	} while (!(uint16_t)ret);
 	comm->Write32(0, ret);
 	TRACE("wait 2 done, ret=0x%08X\n", ret);
@@ -134,11 +148,13 @@ void ARM::SetTracebuf() {
 void ARM::LoadSm() {
 	FILE *fin = fopen("kprx_auth_sm.self", "rb");
 	if (!fin) {
-		FATAL("failed to open sm self file\n");
+		LOG_ERR("failed to open sm self file");
+		return;
 	}
 
 	uint8_t *sm_buf = new uint8_t[SM_SIZE];
-	uint32_t sm_sz = fread(sm_buf, 1, SM_SIZE, fin);
+	uint32_t sm_sz = static_cast<uint32_t>(fread(sm_buf, 1, SM_SIZE, fin));
+	fclose(fin);
 	mem->Write(SM_PA, sm_sz, sm_buf);
 	delete[] sm_buf;
 
@@ -162,8 +178,11 @@ void ARM::LoadSm() {
 	int32_t ret = 0;
 	do {
 		ret = comm->Read32(0x10);
-		if (ret < 0)
-			FATAL("ret: 0x%08X\n", ret);
+		if (ret < 0) {
+			LOG_ERR("ret: 0x%08X", ret);
+			return;
+		}
+		if (ret) std::this_thread::yield();
 		printf("Ret: 0x%08X\n", ret);
 	} while (ret);
 
@@ -176,7 +195,7 @@ void ARM::LoadSm() {
 void ARM::Loop() {
 	StartUp();
 	SetSharedBuffer();
-	usleep(100 * 1000); // TODO: figure the race here? sometimes, setting rvk just fails
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	SetRvk();
 	SetTracebuf();
 	LoadSm();

@@ -1,18 +1,28 @@
 #pragma once
 
-#include "device.h"
+#include <cstdint>
+#include <mutex>
 
-#include <atomic>
+#include "../device.h"
 
-struct Cpu;
+class Cpu;
 
-class ARMComm: public Device {
+class ARMComm : public Device {
 public:
-	ARMComm(Cpu *cpu_);
-	uint32_t Read32(uint32_t addr);
-	void Write32(uint32_t addr, uint32_t value);
+    explicit ARMComm(Cpu *cpu_ = nullptr);
+
+    void AttachCpu(Cpu *cpu_) { cpu = cpu_; }
+    void Reset();
+
+    uint32_t Read32(uint32_t addr) override;
+    void Write32(uint32_t addr, uint32_t value) override;
+
+    // Convenience helpers for ARM-side emulation or debugger control
+    void ArmSendCommand(uint32_t cmd, bool raise_irq = true);
+    uint32_t ArmReadReply() const;
+
 private:
-	Cpu *cpu;
-	std::atomic<uint32_t> reg00; // 0x00
-	std::atomic<uint32_t> reg10; // 0x10
+    Cpu *cpu = nullptr;
+    mutable std::mutex mu;
+    uint32_t regs[32] = {}; // 0x00..0x7C (0x00 = reg00, 0x10 = reg10, etc.)
 };

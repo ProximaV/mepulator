@@ -1,49 +1,66 @@
 #include "armcomm.h"
 
-#include <stdio.h>
-#include <mutex>
+#include <cstring>
 
-#include "cpu.h"
-#include "log.h"
+#include "../cpu.h"
+#include "../log.h"
 
-#define ARMCOMM_BASE 0xE0000000
+ARMComm::ARMComm(Cpu *cpu_) : cpu(cpu_) {
+    Reset();
+}
 
-ARMComm::ARMComm(Cpu *cpu_):
-	cpu(cpu_)
-{}
+void ARMComm::Reset() {
+    std::lock_guard<std::mutex> lock(mu);
+    std::memset(regs, 0, sizeof(regs));
+}
 
 uint32_t ARMComm::Read32(uint32_t addr) {
-	// printf("ARMComm::Read32 0x%x\n", addr);
-
-	switch (addr) {
-	case 0:
-		return reg00;
-	case 0x10:
-		return reg10;
-	default:
-		FATAL("unknown addr 0x%x on read\n", ARMCOMM_BASE + addr);
-	}
+    std::lock_guard<std::mutex> lock(mu);
+    const uint32_t off = addr & 0xFFFu;
+    if (off < sizeof(regs)) {
+        return regs[off >> 2];
+    }
+    LOG_WARN("ARMComm::Read32 unmapped offset 0x%x", off);
+    return 0;
 }
 
 void ARMComm::Write32(uint32_t addr, uint32_t value) {
-	if (addr == 0x10 && value == 0xFFFFFFFF) {
-		// Called from 0x8003FC in 1.692
-		value = 0;
-	}
+    Cpu *target_cpu = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        const uint32_t off = addr & 0xFFFu;
 
-	switch (addr) {
-	case 0:
-		reg00 = value;
-		reg10 = 0;
-		break;
-	case 0x10:
-		reg00 = 0;
-		reg10 = value;
-		// we need to raise mep irq8
-		if (value & 1)
-			cpu->Irq(8);
-		break;
-	default:
-		FATAL("unknown addr 0x%x on write\n", ARMCOMM_BASE + addr);
-	}
+        if (off == 0x10 && value == 0xFFFFFFFFu) {
+            // Early boot probe on F00D firmware (e.g. 1.692)
+            return;
+        }
+
+        if (off == 0x10) {
+            regs[0] = 0; // Clear F00D->ARM status when new command written or cleared
+            regs[0x10 >> 2] = value;
+            if (value != 0) {
+                target_cpu = cpu;
+            }
+        } else if (off < sizeof(regs)) {
+            regs[off >> 2] = value;
+        } else {
+            LOG_WARN("ARMComm::Write32 unmapped offset 0x%x <= 0x%08x", off, value);
+        }
+    }
+
+    if (target_cpu) {
+        target_cpu->RaiseIrq(8);
+    }
+}
+
+void ARMComm::ArmSendCommand(uint32_t cmd, bool raise_irq) {
+    Write32(0x10, cmd);
+    if (!raise_irq && cpu) {
+        cpu->ClearIrq(8);
+    }
+}
+
+uint32_t ARMComm::ArmReadReply() const {
+    std::lock_guard<std::mutex> lock(mu);
+    return regs[0];
 }

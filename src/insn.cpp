@@ -1,75 +1,146 @@
 #include "insn.h"
 
-#include <stdio.h>
-#include <string>
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 
 #include "cpu.h"
 #include "log.h"
 #include "util.h"
 
-#define CRN(regname) (cpu->control.regname)
-#define GRN(regname) (cpu->gpr.regname)
-#define CR(num) (*((uint32_t*)&cpu->control + num))
-#define GR(num) (*((uint32_t*)&cpu->gpr + num))
+namespace {
 
-#define INSN(name) static void name(Cpu *cpu, uint32_t insn)
-
-
-#define Load1(addr) \
-	({uint32_t tmp = 0; \
-	 cpu->memory.Read(addr, 1, &tmp); \
-	 tmp;})
-
-#define Load2(addr) \
-	({uint32_t tmp = 0; \
-	 cpu->memory.Read(addr, 2, &tmp); \
-	 tmp;})
-
-#define Load4(addr) \
-	({uint32_t tmp = 0; \
-	 cpu->memory.Read(addr, 4, &tmp); \
-	 tmp;})
-
-
-#define Store1(value, addr) \
-	do { \
-		uint32_t tmp = value; \
-		cpu->memory.Write(addr, 1, &tmp); \
-	} while(0);
-
-#define Store2(value, addr) \
-	do { \
-		uint32_t tmp = value; \
-		cpu->memory.Write(addr, 2, &tmp); \
-	} while(0);
-
-#define Store4(value, addr) \
-	do { \
-		uint32_t tmp = value; \
-		cpu->memory.Write(addr, 4, &tmp); \
-	} while(0);
-
-
-#define BRA(value) \
-	do_branch(cpu, value);
-
-void do_branch(Cpu *cpu, uint32_t newpc) {
-	if (cpu->rpb_in != -1) {
-		// exit repeat/erepeat block
-		if (newpc < cpu->control.rpb || newpc > cpu->control.rpe) {
-			// printf("repeat/erepeat out via branch\n");
-			cpu->rpb_in = -1;
-		}
-	}
-	cpu->control.pc = newpc;
+inline uint32_t Load1Impl(Cpu *cpu, uint32_t addr) {
+    uint8_t val = 0;
+    cpu->mem.Read(addr, sizeof(val), &val);
+    return val;
 }
 
-#include "insn_gen.h" // See src/insn.in
+inline uint32_t Load2Impl(Cpu *cpu, uint32_t addr) {
+    uint16_t val = 0;
+    cpu->mem.Read(addr, sizeof(val), &val);
+    return val;
+}
 
+inline uint32_t Load4Impl(Cpu *cpu, uint32_t addr) {
+    uint32_t val = 0;
+    cpu->mem.Read(addr, sizeof(val), &val);
+    return val;
+}
 
-insn_t *insn_decode(uint32_t insn_i) {
-	for (auto &insn : insn_table)
-		if ((insn.mask & insn_i) == insn.match)
-			return &insn;
-	return nullptr;
+inline void Store1ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) {
+    uint8_t v = static_cast<uint8_t>(val);
+    cpu->mem.Write(addr, sizeof(v), &v);
+}
+
+inline void Store2ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) {
+    uint16_t v = static_cast<uint16_t>(val);
+    cpu->mem.Write(addr, sizeof(v), &v);
+}
+
+inline void Store4ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) {
+    cpu->mem.Write(addr, sizeof(val), &val);
+}
+
+inline void DoBranch(Cpu *cpu, uint32_t newpc) {
+    const uint32_t target = newpc & ~1u;
+    CRN(pc) = target;
+    cpu->branched = true;
+    if ((cpu->control.rpc > 0 || cpu->erepeat_active) && !cpu->InActiveRepeatRange(target)) {
+        cpu->CancelRepeat();
+    }
+}
+
+inline uint32_t CountLeadingZeros32(uint32_t v) {
+    if (v == 0) {
+        return 32;
+    }
+    uint32_t n = 0;
+    for (uint32_t bit = 0x80000000u; bit != 0; bit >>= 1) {
+        if ((v & bit) != 0) {
+            break;
+        }
+        ++n;
+    }
+    return n;
+}
+
+inline uint32_t SaturateSigned32(int64_t v) {
+    if (v > INT32_MAX) {
+        return static_cast<uint32_t>(INT32_MAX);
+    }
+    if (v < INT32_MIN) {
+        return static_cast<uint32_t>(INT32_MIN);
+    }
+    return static_cast<uint32_t>(static_cast<int32_t>(v));
+}
+
+inline uint32_t ClipSigned(int32_t v, uint32_t bits) {
+    if (bits == 0) {
+        return 0;
+    }
+    if (bits >= 32) {
+        return static_cast<uint32_t>(v);
+    }
+    const int64_t hi = (int64_t{1} << (bits - 1)) - 1;
+    const int64_t lo = -(int64_t{1} << (bits - 1));
+    int64_t val = v;
+    if (val > hi) {
+        val = hi;
+    } else if (val < lo) {
+        val = lo;
+    }
+    return static_cast<uint32_t>(static_cast<int32_t>(val));
+}
+
+inline uint32_t ClipUnsigned(int32_t v, uint32_t bits) {
+    if (bits == 0 || v < 0) {
+        return 0;
+    }
+    if (bits >= 32) {
+        return static_cast<uint32_t>(v);
+    }
+    const uint64_t hi = (uint64_t{1} << bits) - 1;
+    const uint64_t val = static_cast<uint32_t>(v);
+    return static_cast<uint32_t>(val > hi ? hi : val);
+}
+
+inline uint32_t AbsDiffS32(int32_t a, int32_t b) {
+    int64_t diff = static_cast<int64_t>(a) - static_cast<int64_t>(b);
+    if (diff < 0) {
+        diff = -diff;
+    }
+    return static_cast<uint32_t>(diff);
+}
+
+inline uint32_t AveS32(int32_t a, int32_t b) {
+    const int64_t sum = static_cast<int64_t>(a) + static_cast<int64_t>(b) + 1;
+    return static_cast<uint32_t>(sum >> 1);
+}
+
+} // namespace
+
+#define Load1(addr) Load1Impl(cpu, (addr))
+#define Load2(addr) Load2Impl(cpu, (addr))
+#define Load4(addr) Load4Impl(cpu, (addr))
+#define Store1(val, addr) Store1ValAddr(cpu, (val), (addr))
+#define Store2(val, addr) Store2ValAddr(cpu, (val), (addr))
+#define Store4(val, addr) Store4ValAddr(cpu, (val), (addr))
+#define BRA(addr) DoBranch(cpu, (addr))
+#define INSN(name) static void name(Cpu *cpu, uint32_t insn)
+
+#include "insn_gen.cpp"
+
+const insn_t *decode_insn(uint32_t raw) {
+    const uint32_t count = static_cast<uint32_t>(sizeof(insn_table) / sizeof(insn_table[0]));
+    for (uint32_t i = 0; i < count; ++i) {
+        if ((raw & insn_table[i].mask) == insn_table[i].match) {
+            return &insn_table[i];
+        }
+    }
+    return nullptr;
+}
+
+uint32_t insn_table_size() {
+    return static_cast<uint32_t>(sizeof(insn_table) / sizeof(insn_table[0]));
 }

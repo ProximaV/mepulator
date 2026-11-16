@@ -31,7 +31,7 @@ and {
 
 
 1100_nnnn_mmmm_0101 iiii_iiii_iiii_iiii
-imm16 = iiii_iiii_iiii_iiii_iiii
+imm16 = iiii_iiii_iiii_iiii
 and3 {
 	GR(n) = GR(m) & imm16;
 }
@@ -143,9 +143,7 @@ ei {
 1110_0000_0001_1001 dddd_dddd_dddd_dddd
 disp17 = dddd_dddd_dddd_dddd||0
 erepeat {
-	CRN(rpb) = CRN(pc);
-	CRN(rpe) = (CRN(pc) - 4 + SignExt(disp17, 17, 32)) | 1;
-	CRN(rpc) = 0xDEADBEEF; // undefined
+	cpu->BeginErepeat(CRN(pc), CRN(pc) - 4 + SignExt(disp17, 17, 32));
 }
 
 
@@ -176,7 +174,7 @@ jmp_rm {
 1101_1TTT_TTTT_1000 tttt_tttt_tttt_tttt
 target24 = tttt_tttt_tttt_tttt||TTT_TTTT||0
 jmp_target24 {
-	BRA((CRN(pc) & 0xf0000000) | target24);
+	BRA((cpu->cur_pc & 0xf0000000u) | target24);
 }
 
 
@@ -237,7 +235,7 @@ ldc {
 1111_nnnn_0001_0100 aaaa_aaaa_aaaa_aaaa
 abs16=aaaa_aaaa_aaaa_aaaa
 ldcb {
-	FATAL("unimplemented\n"); // TODO
+	GR(n) = cpu->ReadControlBus(abs16);
 }
 
 
@@ -384,9 +382,7 @@ or3 {
 1110_nnnn_0000_1001 dddd_dddd_dddd_dddd
 disp17 = dddd_dddd_dddd_dddd||0
 repeat {
-	CRN(rpb) = CRN(pc);
-	CRN(rpe) = (CRN(pc) - 4 + SignExt(disp17, 17, 32)) | 0;
-	CRN(rpc) = GR(n);
+	cpu->BeginRepeat(CRN(pc), CRN(pc) - 4 + SignExt(disp17, 17, 32), GR(n));
 }
 
 
@@ -398,11 +394,7 @@ ret {
 
 0111_0000_0001_0010
 reti {
-// TODO: we only handle non-NMI here
-	CRN(psw) = SetBit(CRN(psw), 2, GetBit(CRN(psw), 3)); // PSW.UMC <- PSW.UMP
-	CRN(psw) = SetBit(CRN(psw), 0, GetBit(CRN(psw), 1)); // PSW.IEC <- PSW.IEP
-
-	BRA(CRN(epc));
+	cpu->ReturnFromException();
 }
 
 
@@ -448,8 +440,10 @@ sh_disp16 {
 
 0111_0000_0110_0010
 sleep {
-	printf("sleep\n");
-	cpu->state = CpuState::Sleep;
+	cpu->sleeping = true;
+	if (cpu->stop_on_halt) {
+		cpu->pending_stop = StopInfo{StopReason::Halt, cpu->cur_pc, 0, false};
+	}
 }
 
 
@@ -482,7 +476,7 @@ slt3_r0 {
 0110_nnnn_iiii_i001
 imm5 = iiii_i
 slt3_imm5 {
-	GRN(r0) = (int32_t)GR(n) < imm5;
+	GRN(r0) = (int32_t)GR(n) < (int32_t)imm5;
 }
 
 
@@ -516,14 +510,14 @@ sltu3_imm16 {
 0010_nnnn_mmmm_1101
 sra_rm {
 	uint32_t bits = GR(m) & 0b11111;
-	GR(n) = SignExt((GR(n) >> bits), 32 - bits, 32);
+	GR(n) = static_cast<uint32_t>(static_cast<int32_t>(GR(n)) >> bits);
 }
 
 
 0110_nnnn_iiii_i011
 Imm5 = iiii_i
 sra_imm5 {
-	GR(n) = SignExt((GR(n) >> Imm5), 32 - Imm5, 32);
+	GR(n) = static_cast<uint32_t>(static_cast<int32_t>(GR(n)) >> Imm5);
 }
 
 
@@ -549,14 +543,14 @@ sub {
 0111_nnnn_iiii_100I
 imm5 = I||iiii
 stc {
-	CR(imm5) = GR(n);
+	cpu->SetCR(imm5, GR(n));
 }
 
 
 1111_nnnn_0000_0100 aaaa_aaaa_aaaa_aaaa
 abs16=aaaa_aaaa_aaaa_aaaa
 stcb {
-	printf("stcb: TODO [0x%x] <= R%d (0x%x)\n", abs16, n, GR(n));
+	cpu->WriteControlBus(abs16, GR(n));
 }
 
 
@@ -604,4 +598,390 @@ xor {
 imm16 = iiii_iiii_iiii_iiii
 xor3 {
 	GR(n) = GR(m) ^ imm16;
+}
+
+
+0001_nnnn_0010_1101
+exth {
+	GR(n) = SignExt(GR(n), 16, 32);
+}
+
+
+0001_00ii_mmmm_1100
+ssarb {
+	CRN(sar) = ((GR(m) + i) & 3u) * 8u;
+}
+
+
+0000_nnnn_mmmm_0111
+advck3 {
+	GRN(r0) = static_cast<uint32_t>((static_cast<uint64_t>(GR(n)) + static_cast<uint64_t>(GR(m))) >> 32);
+}
+
+
+0000_nnnn_mmmm_0101
+sbvck3 {
+	GRN(r0) = (GR(n) < GR(m)) ? 1u : 0u;
+}
+
+
+0010_nnnn_mmmm_0110
+sl1ad3 {
+	GRN(r0) = (GR(n) << 1) + GR(m);
+}
+
+
+0010_nnnn_mmmm_0111
+sl2ad3 {
+	GRN(r0) = (GR(n) << 2) + GR(m);
+}
+
+
+0010_nnnn_mmmm_1111
+fsft {
+	uint32_t s = CRN(sar) & 31u;
+	GR(n) = static_cast<uint32_t>(((static_cast<uint64_t>(GR(m)) << 32) | GR(n)) >> s);
+}
+
+
+0001_nnnn_mmmm_0100
+mul {
+	int64_t res = static_cast<int64_t>(static_cast<int32_t>(GR(n))) * static_cast<int64_t>(static_cast<int32_t>(GR(m)));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(static_cast<uint64_t>(res) >> 32);
+}
+
+
+0001_nnnn_mmmm_0101
+mulu {
+	uint64_t res = static_cast<uint64_t>(GR(n)) * static_cast<uint64_t>(GR(m));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(res >> 32);
+}
+
+
+0001_nnnn_mmmm_0110
+mulr {
+	int64_t res = static_cast<int64_t>(static_cast<int32_t>(GR(n))) * static_cast<int64_t>(static_cast<int32_t>(GR(m)));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(static_cast<uint64_t>(res) >> 32);
+	GR(n) = CRN(lo);
+}
+
+
+0001_nnnn_mmmm_0111
+mulru {
+	uint64_t res = static_cast<uint64_t>(GR(n)) * static_cast<uint64_t>(GR(m));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(res >> 32);
+	GR(n) = CRN(lo);
+}
+
+
+1111_nnnn_mmmm_0001 0011_0000_0000_0100
+madd {
+	int64_t acc = static_cast<int64_t>((static_cast<uint64_t>(CRN(hi)) << 32) | CRN(lo));
+	int64_t res = acc + static_cast<int64_t>(static_cast<int32_t>(GR(n))) * static_cast<int64_t>(static_cast<int32_t>(GR(m)));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(static_cast<uint64_t>(res) >> 32);
+}
+
+
+1111_nnnn_mmmm_0001 0011_0000_0000_0101
+maddu {
+	uint64_t acc = (static_cast<uint64_t>(CRN(hi)) << 32) | CRN(lo);
+	uint64_t res = acc + static_cast<uint64_t>(GR(n)) * static_cast<uint64_t>(GR(m));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(res >> 32);
+}
+
+
+1111_nnnn_mmmm_0001 0011_0000_0000_0110
+maddr {
+	int64_t acc = static_cast<int64_t>((static_cast<uint64_t>(CRN(hi)) << 32) | CRN(lo));
+	int64_t res = acc + static_cast<int64_t>(static_cast<int32_t>(GR(n))) * static_cast<int64_t>(static_cast<int32_t>(GR(m)));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(static_cast<uint64_t>(res) >> 32);
+	GR(n) = CRN(lo);
+}
+
+
+1111_nnnn_mmmm_0001 0011_0000_0000_0111
+maddru {
+	uint64_t acc = (static_cast<uint64_t>(CRN(hi)) << 32) | CRN(lo);
+	uint64_t res = acc + static_cast<uint64_t>(GR(n)) * static_cast<uint64_t>(GR(m));
+	CRN(lo) = static_cast<uint32_t>(res);
+	CRN(hi) = static_cast<uint32_t>(res >> 32);
+	GR(n) = CRN(lo);
+}
+
+
+0001_nnnn_mmmm_1000
+div {
+	int32_t lhs = static_cast<int32_t>(GR(n));
+	int32_t rhs = static_cast<int32_t>(GR(m));
+	if (rhs == 0) {
+		CRN(lo) = 0;
+		CRN(hi) = 0;
+	} else if (lhs == INT32_MIN && rhs == -1) {
+		CRN(lo) = static_cast<uint32_t>(INT32_MIN);
+		CRN(hi) = 0;
+	} else {
+		CRN(lo) = static_cast<uint32_t>(lhs / rhs);
+		CRN(hi) = static_cast<uint32_t>(lhs % rhs);
+	}
+}
+
+
+0001_nnnn_mmmm_1001
+divu {
+	uint32_t rhs = GR(m);
+	if (rhs == 0) {
+		CRN(lo) = 0;
+		CRN(hi) = 0;
+	} else {
+		CRN(lo) = GR(n) / rhs;
+		CRN(hi) = GR(n) % rhs;
+	}
+}
+
+
+0010_0iii_mmmm_0000
+bsetm {
+	uint32_t addr = GR(m);
+	Store1(Load1(addr) | (1u << i), addr);
+}
+
+
+0010_0iii_mmmm_0001
+bclrm {
+	uint32_t addr = GR(m);
+	Store1(Load1(addr) & ~(1u << i), addr);
+}
+
+
+0010_0iii_mmmm_0010
+bnotm {
+	uint32_t addr = GR(m);
+	Store1(Load1(addr) ^ (1u << i), addr);
+}
+
+
+0010_0iii_mmmm_0011
+btstm {
+	GRN(r0) = Load1(GR(m)) & (1u << i);
+}
+
+
+0010_nnnn_mmmm_0100
+tas {
+	uint32_t addr = GR(m);
+	uint32_t old = Load1(addr);
+	Store1(1u, addr);
+	GR(n) = old;
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0000
+ldz {
+	GR(n) = CountLeadingZeros32(GR(m));
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0010
+ave {
+	GR(n) = AveS32(static_cast<int32_t>(GR(n)), static_cast<int32_t>(GR(m)));
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0011
+abs {
+	GR(n) = AbsDiffS32(static_cast<int32_t>(GR(n)), static_cast<int32_t>(GR(m)));
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0100
+min {
+	GR(n) = (static_cast<int32_t>(GR(n)) < static_cast<int32_t>(GR(m))) ? GR(n) : GR(m);
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0101
+max {
+	GR(n) = (static_cast<int32_t>(GR(n)) > static_cast<int32_t>(GR(m))) ? GR(n) : GR(m);
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0110
+minu {
+	GR(n) = (GR(n) < GR(m)) ? GR(n) : GR(m);
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_0111
+maxu {
+	GR(n) = (GR(n) > GR(m)) ? GR(n) : GR(m);
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_1000
+sadd {
+	GR(n) = SaturateSigned32(static_cast<int64_t>(static_cast<int32_t>(GR(n))) + static_cast<int64_t>(static_cast<int32_t>(GR(m))));
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_1001
+saddu {
+	uint64_t sum = static_cast<uint64_t>(GR(n)) + static_cast<uint64_t>(GR(m));
+	GR(n) = (sum > 0xFFFFFFFFull) ? 0xFFFFFFFFu : static_cast<uint32_t>(sum);
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_1010
+ssub {
+	GR(n) = SaturateSigned32(static_cast<int64_t>(static_cast<int32_t>(GR(n))) - static_cast<int64_t>(static_cast<int32_t>(GR(m))));
+}
+
+
+1111_nnnn_mmmm_0001 0000_0000_0000_1011
+ssubu {
+	GR(n) = (GR(n) > GR(m)) ? (GR(n) - GR(m)) : 0u;
+}
+
+
+1111_nnnn_0000_0001 0001_0000_iiii_i000
+clip {
+	GR(n) = ClipSigned(static_cast<int32_t>(GR(n)), i);
+}
+
+
+1111_nnnn_0000_0001 0001_0000_iiii_i001
+clipu {
+	GR(n) = ClipUnsigned(static_cast<int32_t>(GR(n)), i);
+}
+
+
+1111_nnnn_mmmm_0001 0010_llll_0000_0000
+casb3 {
+	uint32_t addr = GR(m);
+	uint32_t old = Load1(addr);
+	if ((old & 0xFFu) == (GR(n) & 0xFFu)) {
+		Store1(GR(l) & 0xFFu, addr);
+	}
+	GR(l) = SignExt(old, 8, 32);
+}
+
+
+1111_nnnn_mmmm_0001 0010_llll_0000_0001
+cash3 {
+	uint32_t addr = GR(m);
+	uint32_t old = Load2(addr);
+	if ((old & 0xFFFFu) == (GR(n) & 0xFFFFu)) {
+		Store2(GR(l) & 0xFFFFu, addr);
+	}
+	GR(l) = SignExt(old, 16, 32);
+}
+
+
+1111_nnnn_mmmm_0001 0010_llll_0000_0010
+casw3 {
+	uint32_t addr = GR(m);
+	uint32_t old = Load4(addr);
+	if (old == GR(n)) {
+		Store4(GR(l), addr);
+	}
+	GR(l) = old;
+}
+
+
+0111_nnnn_mmmm_1100
+stcb_r {
+	cpu->WriteControlBus(GR(m), GR(n));
+}
+
+
+0111_nnnn_mmmm_1101
+ldcb_r {
+	GR(n) = cpu->ReadControlBus(GR(m));
+}
+
+
+0111_0000_0001_0001
+syncm {
+}
+
+
+0111_0000_0010_0001
+synccp {
+}
+
+
+0111_0000_0010_0010
+halt {
+	if (cpu->stop_on_halt) {
+		cpu->pending_stop = StopInfo{StopReason::Halt, cpu->cur_pc, 0, false};
+	}
+}
+
+
+0111_0000_0011_0010
+break_insn {
+	if (cpu->stop_on_break) {
+		cpu->pending_stop = StopInfo{StopReason::BreakInsn, cpu->cur_pc, 0, false};
+	}
+}
+
+
+0111_0000_0001_0011
+dret {
+	cpu->ReturnFromDebug();
+}
+
+
+0111_0000_0011_0011
+dbreak {
+	cpu->pending_stop = StopInfo{StopReason::DbreakInsn, cpu->cur_pc, 0, false};
+}
+
+
+0111_iiii_mmmm_0100
+cache {
+	(void)i;
+	(void)m;
+}
+
+
+0111_iiii_mmmm_0101
+pref {
+	(void)i;
+	(void)m;
+}
+
+
+1111_iiii_mmmm_0011 dddd_dddd_dddd_dddd
+prefd {
+	(void)i;
+	(void)m;
+	(void)d;
+}
+
+
+0111_0000_00ii_0110
+swi {
+	cpu->TriggerSwi(i, CRN(pc));
+}
+
+
+0001_1000_mmmm_1111
+jsrv {
+	CRN(lp) = CRN(pc);
+	BRA(GR(m) & ~1u);
+}
+
+
+1101_1DDD_DDDD_1011 dddd_dddd_dddd_dddd
+bsrv {
+	uint32_t disp24 = (static_cast<uint32_t>(d) << 8) | (static_cast<uint32_t>(D) << 1);
+	CRN(lp) = CRN(pc);
+	BRA(CRN(pc) - 4 + SignExt(disp24, 24, 32));
 }

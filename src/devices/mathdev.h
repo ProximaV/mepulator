@@ -1,18 +1,28 @@
 #pragma once
 
-#include "device.h"
+#include <cstdint>
 
-class Math: public Device {
+#include "../device.h"
+
+class Cpu;
+
+class Math : public Device {
 public:
-	uint32_t Read32(uint32_t addr);
-	void Write32(uint32_t addr, uint32_t value);
-private:
-	void PowMod();
+    explicit Math(Cpu *cpu_ = nullptr);
 
-	uint32_t flags = 0;
-	uint8_t sig[0x200] = { 0 };
-	uint8_t modulus[0x100] = { 0 };
-	uint8_t res[0x200] = { 0 };
-	uint32_t exponent = 0;
-	uint32_t cmd = 0;
+    void AttachCpu(Cpu *cpu_) { cpu = cpu_; }
+    void Reset();
+
+    uint32_t Read32(uint32_t addr) override;
+    void Write32(uint32_t addr, uint32_t value) override;
+
+    void PowMod();
+
+    uint32_t flags = 0;
+    uint8_t ram[0x800] = {};
+    uint32_t exponent = 0;
+    uint32_t cmd = 0;
+
+private:
+    Cpu *cpu = nullptr;
 };

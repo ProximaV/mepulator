@@ -1,298 +1,398 @@
 #include "bigmac.h"
 
-#include <stdio.h>
-#include <string.h>
-
-#include "log.h"
-#include "memory.h"
-#include "util.h"
+#include <algorithm>
+#include <cstring>
+#include <vector>
 
 #include "mbedtls/aes.h"
+#include "mbedtls/sha1.h"
 #include "mbedtls/sha256.h"
 
-#define DEBUG_CRYPTO 0
+#include "../cpu.h"
+#include "../log.h"
+#include "../memory.h"
+#include "eeprom.h"
 
-Bigmac::Bigmac(Memory *mem_):
-	mem(mem_)
-{}
+namespace {
+
+inline void Byteswap(uint8_t *arr, size_t sz) {
+    for (size_t i = 0; i < sz / 2; ++i) {
+        std::swap(arr[i], arr[sz - i - 1]);
+    }
+}
+
+bool AesEcbCrypt(uint8_t *data, size_t data_sz, const uint8_t *key, size_t key_bits, bool encrypt) {
+    if ((key_bits != 128 && key_bits != 192 && key_bits != 256) || (data_sz & 0xFu) != 0) {
+        LOG_ERR("Bigmac AES-ECB invalid key_bits=%zu data_sz=0x%zx", key_bits, data_sz);
+        return false;
+    }
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    const int key_rc = encrypt
+        ? mbedtls_aes_setkey_enc(&ctx, key, static_cast<unsigned>(key_bits))
+        : mbedtls_aes_setkey_dec(&ctx, key, static_cast<unsigned>(key_bits));
+    if (key_rc != 0) {
+        mbedtls_aes_free(&ctx);
+        LOG_ERR("Bigmac AES-ECB setkey failed: %d", key_rc);
+        return false;
+    }
+
+    const int mode = encrypt ? MBEDTLS_AES_ENCRYPT : MBEDTLS_AES_DECRYPT;
+    for (size_t off = 0; off < data_sz; off += 16) {
+        uint8_t out_blk[16] = {};
+        if (mbedtls_aes_crypt_ecb(&ctx, mode, data + off, out_blk) != 0) {
+            mbedtls_aes_free(&ctx);
+            LOG_ERR("Bigmac AES-ECB crypt failed at offset 0x%zx", off);
+            return false;
+        }
+        std::memcpy(data + off, out_blk, 16);
+    }
+    mbedtls_aes_free(&ctx);
+    return true;
+}
+
+bool AesCbcCrypt(uint8_t *data, size_t data_sz, const uint8_t *key, size_t key_bits, uint8_t *iv, bool encrypt) {
+    if ((key_bits != 128 && key_bits != 192 && key_bits != 256) || (data_sz & 0xFu) != 0) {
+        LOG_ERR("Bigmac AES-CBC invalid key_bits=%zu data_sz=0x%zx", key_bits, data_sz);
+        return false;
+    }
+    if (data_sz == 0) {
+        return true;
+    }
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    const int key_rc = encrypt
+        ? mbedtls_aes_setkey_enc(&ctx, key, static_cast<unsigned>(key_bits))
+        : mbedtls_aes_setkey_dec(&ctx, key, static_cast<unsigned>(key_bits));
+    if (key_rc != 0) {
+        mbedtls_aes_free(&ctx);
+        LOG_ERR("Bigmac AES-CBC setkey failed: %d", key_rc);
+        return false;
+    }
+
+    std::vector<uint8_t> out(data_sz);
+    const int mode = encrypt ? MBEDTLS_AES_ENCRYPT : MBEDTLS_AES_DECRYPT;
+    const int rc = mbedtls_aes_crypt_cbc(&ctx, mode, data_sz, iv, data, out.data());
+    mbedtls_aes_free(&ctx);
+    if (rc != 0) {
+        LOG_ERR("Bigmac AES-CBC crypt failed: %d", rc);
+        return false;
+    }
+    std::memcpy(data, out.data(), data_sz);
+    return true;
+}
+
+bool AesCtrCrypt(uint8_t *data, size_t data_sz, const uint8_t *key, size_t key_bits, uint8_t *iv) {
+    if (key_bits != 128 && key_bits != 192 && key_bits != 256) {
+        LOG_ERR("Bigmac AES-CTR invalid key_bits=%zu", key_bits);
+        return false;
+    }
+    if (data_sz == 0) {
+        return true;
+    }
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    if (mbedtls_aes_setkey_enc(&ctx, key, static_cast<unsigned>(key_bits)) != 0) {
+        mbedtls_aes_free(&ctx);
+        LOG_ERR("Bigmac AES-CTR setkey failed");
+        return false;
+    }
+
+    size_t nc_off = 0;
+    uint8_t counter[16];
+    uint8_t stream_block[16] = {};
+    std::memcpy(counter, iv, 16);
+    Byteswap(counter, 16);
+
+    std::vector<uint8_t> out(data_sz);
+    const int rc = mbedtls_aes_crypt_ctr(&ctx, data_sz, &nc_off, counter, stream_block, data, out.data());
+    mbedtls_aes_free(&ctx);
+    if (rc != 0) {
+        LOG_ERR("Bigmac AES-CTR crypt failed: %d", rc);
+        return false;
+    }
+
+    Byteswap(counter, 16);
+    std::memcpy(iv, counter, 16);
+    std::memcpy(data, out.data(), data_sz);
+    return true;
+}
+
+void ComputeHmacSha256(const uint8_t *data, size_t data_len, const uint8_t *key, size_t key_len, uint8_t output[32]) {
+    uint8_t key_block[64] = {};
+    if (key_len > 64) {
+        mbedtls_sha256(key, key_len, key_block, 0);
+    } else {
+        std::memcpy(key_block, key, key_len);
+    }
+
+    uint8_t ipad[64];
+    uint8_t opad[64];
+    for (int i = 0; i < 64; ++i) {
+        ipad[i] = key_block[i] ^ 0x36u;
+        opad[i] = key_block[i] ^ 0x5cu;
+    }
+
+    uint8_t inner[32] = {};
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, ipad, 64);
+    mbedtls_sha256_update(&ctx, data, data_len);
+    mbedtls_sha256_finish(&ctx, inner);
+
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, opad, 64);
+    mbedtls_sha256_update(&ctx, inner, 32);
+    mbedtls_sha256_finish(&ctx, output);
+
+    mbedtls_sha256_free(&ctx);
+}
+
+void ComputeHmacSha1(const uint8_t *data, size_t data_len, const uint8_t *key, size_t key_len, uint8_t output[20]) {
+    uint8_t key_block[64] = {};
+    if (key_len > 64) {
+        mbedtls_sha1(key, key_len, key_block);
+    } else {
+        std::memcpy(key_block, key, key_len);
+    }
+
+    uint8_t ipad[64];
+    uint8_t opad[64];
+    for (int i = 0; i < 64; ++i) {
+        ipad[i] = key_block[i] ^ 0x36u;
+        opad[i] = key_block[i] ^ 0x5cu;
+    }
+
+    uint8_t inner[20] = {};
+    mbedtls_sha1_context ctx;
+    mbedtls_sha1_init(&ctx);
+
+    mbedtls_sha1_starts(&ctx);
+    mbedtls_sha1_update(&ctx, ipad, 64);
+    mbedtls_sha1_update(&ctx, data, data_len);
+    mbedtls_sha1_finish(&ctx, inner);
+
+    mbedtls_sha1_starts(&ctx);
+    mbedtls_sha1_update(&ctx, opad, 64);
+    mbedtls_sha1_update(&ctx, inner, 20);
+    mbedtls_sha1_finish(&ctx, output);
+
+    mbedtls_sha1_free(&ctx);
+}
+
+} // namespace
+
+Bigmac::Bigmac(Memory *mem_, EEPROM *keyring_, Cpu *cpu_)
+    : mem(mem_), keyring(keyring_), cpu(cpu_) {
+    Reset();
+}
+
+void Bigmac::Reset() {
+    std::memset(channels, 0, sizeof(channels));
+    std::memset(control, 0, sizeof(control));
+    std::memset(control2, 0, sizeof(control2));
+    ext_key_written = false;
+    rng.seed(0xF00DC7A5u);
+}
+
+bool Bigmac::ResolveKey(const bigmac_regs *ch, size_t key_bytes, uint8_t *out_key) const {
+    const size_t n = std::min(key_bytes, static_cast<size_t>(32));
+    const bool use_keyslot = ((ch->func & 0x400u) != 0) || (ch->keyslot != 0 && !ext_key_written && keyring != nullptr);
+    if (use_keyslot && keyring) {
+        return keyring->GetKeySlot(ch->keyslot, out_key, n);
+    }
+    std::memcpy(out_key, control2, n);
+    return true;
+}
 
 uint32_t Bigmac::Read32(uint32_t addr) {
-	if (addr == 0x3C) {
-		printf("access RNG\n");
-		return 0x11223344;
-	}
-	if (addr == 0x24)
-		return channels[0].busy;
-	FATAL("unknown addr 0x%x on read\n", addr);
+    addr &= 0xFFFu;
+    if (addr == 0x3C) {
+        return static_cast<uint32_t>(rng());
+    }
+    if (addr == 0x24) {
+        return channels[0].busy;
+    }
+    if (addr >= 0x200 && addr < 0x300) {
+        return control2[(addr - 0x200u) >> 2];
+    }
+    if (addr >= 0x100 && addr < 0x200) {
+        const uint32_t ch_idx = (addr - 0x100u) / sizeof(bigmac_regs);
+        const uint32_t reg_off = (addr - 0x100u) % sizeof(bigmac_regs);
+        const uint8_t *base = reinterpret_cast<const uint8_t *>(&channels[ch_idx]);
+        uint32_t val = 0;
+        std::memcpy(&val, base + reg_off, sizeof(val));
+        return val;
+    }
+    if (addr < sizeof(control)) {
+        return control[addr >> 2];
+    }
+    LOG_WARN("Bigmac::Read32 unmapped addr 0x%03x", addr);
+    return 0;
 }
 
 void Bigmac::Write32(uint32_t addr, uint32_t value) {
-	if (addr >= 0x200) {
-		addr -= 0x200;
-		if (addr >= sizeof(control2) || addr & 0b11)
-			FATAL("invalid control2 addr 0x200+0x%x\n", addr);
-		control2[addr / 4] = value;
-	} else if (addr >= 0x100) {
-		addr -= 0x100;
-		if (addr >= sizeof(control) || addr & 0b11)
-			FATAL("invalid control addr 0x100+0x%x\n", addr);
-		control[addr / 4] = value;
-	} else {
-		if (addr & 0b11)
-			FATAL("unaligned address 0x%x\n", addr);
-		int c = (addr >= sizeof(bigmac_regs)) ? 1 : 0;
-		addr -= sizeof(bigmac_regs) * c;
-		bigmac_regs *ch = &channels[c];
-		*(uint32_t*)((char*)ch + addr) = value;
-		if (addr == 0x1C) {
-#if DEBUG_CRYPTO
-			printf("---- Bigmac commit: channel %d -------------------------------------------------------\n", c);
-			printf("src: 0x%08x dst:  0x%08x sz:  0x%08x func: 0x%08x keyslot: 0x%08x\n", ch->src, ch->dst, ch->sz, ch->func, ch->keyslot);
-			printf("iv:  0x%08x 0x18: 0x%08x cmt: 0x%08x 0x20: 0x%08x busy:    0x%08x\n", ch->iv, ch->unk_0x18, ch->commit, ch->unk_0x20, ch->busy);
-			hex_dump(0x28, (uint8_t*)ch->unk, sizeof(ch->unk));
-			printf("control:\n");
-			hex_dump(0, (uint8_t*)control, sizeof(control));
-			printf("control2:\n");
-			hex_dump(0, (uint8_t*)control2, sizeof(control2));
-			printf("-------------------------------------------------------------------------------------\n");
-#endif
+    addr &= 0xFFFu;
+    if (addr >= 0x200 && addr < 0x300) {
+        control2[(addr - 0x200u) >> 2] = value;
+        ext_key_written = true;
+        return;
+    }
 
-			if (value != 1)
-				FATAL("commit: got unknown value 0x%x\n", value);
+    if (addr >= 0x100 && addr < 0x200) {
+        const int ch_idx = static_cast<int>((addr - 0x100u) / sizeof(bigmac_regs));
+        const uint32_t reg_off = (addr - 0x100u) % sizeof(bigmac_regs);
+        bigmac_regs *ch = &channels[ch_idx];
+        std::memcpy(reinterpret_cast<uint8_t *>(ch) + reg_off, &value, sizeof(value));
 
-			ch->busy = 1;
-			DoFunc(c);
-			ch->busy = 0;
-		}
-	}
-}
+        if (reg_off == 0x1C) { // commit
+            ch->busy = 1;
+            DoFunc(ch_idx);
+            ch->busy = 0;
+            ext_key_written = false;
+        }
+        return;
+    }
 
-static void aes_decrypt(void *data, size_t data_sz, void *key, size_t key_sz, void *iv) {
-	mbedtls_aes_context aes = {0};
-	if (key_sz != 128 && key_sz != 192 && key_sz != 256)
-		FATAL("bad key size: %d\n", key_sz);
-	if (data_sz & 0xF)
-		FATAL("bad data size: 0x%x\n", data_sz);
-	if (mbedtls_aes_setkey_dec(&aes, (unsigned char*)key, key_sz))
-		FATAL("mbedtls_aes_setkey_dec failed\n");
-
-#if DEBUG_CRYPTO
-	printf("-- aes-%d-cbc decrypt --\n", key_sz);
-
-	printf("key:\n");
-	hex_dump(0, (uint8_t*)key, key_sz/8);
-	printf("iv:\n");
-	hex_dump(0, (uint8_t*)iv, 16);
-	printf("data:\n");
-	hex_dump(0, (uint8_t*)data, data_sz);
-#endif
-
-	uint8_t *tmp = new uint8_t[data_sz];
-	if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, data_sz, (unsigned char *)iv, (unsigned char *)data, (unsigned char *)tmp))
-		FATAL("mbedtls_aes_crypt_cbc failed\n");
-
-#if DEBUG_CRYPTO
-	printf("decrypted:\n");
-	hex_dump(0, (uint8_t*)tmp, data_sz);
-#endif
-
-	memcpy(data, tmp, data_sz);
-	delete[] tmp;
-}
-
-static void byteswap(uint8_t *arr, size_t sz) {
-	for (size_t i = 0; i < sz / 2; ++i) {
-		uint8_t tmp = arr[i];
-		arr[i] = arr[sz - i - 1];
-		arr[sz - i - 1] = tmp;
-	}
-}
-
-static void aes_ctr(void *data, size_t data_sz, void *key, size_t key_sz, void *iv) {
-	mbedtls_aes_context ctx;
-	mbedtls_aes_init(&ctx);
-	if (key_sz != 128 && key_sz != 192 && key_sz != 256)
-		FATAL("bad key size: %d\n", key_sz);
-	if (data_sz & 0xF)
-		FATAL("bad data size: 0x%x\n", data_sz);
-	if (mbedtls_aes_setkey_enc(&ctx, (unsigned char*)key, key_sz))
-		FATAL("mbedtls_aes_setkey_enc failed\n");
-
-#if DEBUG_CRYPTO
-	printf("-- aes-%d-ctr --\n", key_sz);
-
-	printf("key:\n");
-	hex_dump(0, (uint8_t*)key, key_sz/8);
-	printf("ctr:\n");
-	hex_dump(0, (uint8_t*)iv, 16);
-	printf("data:\n");
-	hex_dump(0, (uint8_t*)data, data_sz);
-#endif
-
-	uint8_t *tmp = new uint8_t[data_sz];
-	uint8_t counter[16];
-	uint8_t stream_block[16] = { 0 };
-	memcpy(counter, iv, 16);
-	byteswap(counter, 16);
-	size_t nc_off = 0;
-	if (mbedtls_aes_crypt_ctr(&ctx, data_sz, &nc_off, counter, stream_block, (uint8_t*)data, tmp))
-		FATAL("mbedtls_aes_crypt_ctr failed\n");
-	byteswap(counter, 16);
-	memcpy(iv, counter, 16);
-
-#if DEBUG_CRYPTO
-	printf("decrypted:\n");
-	hex_dump(0, tmp, data_sz);
-#endif
-
-	memcpy(data, tmp, data_sz);
-	delete[] tmp;
-
-	mbedtls_aes_free(&ctx);
-}
-
-static void hmac_sha256(uint8_t *data, size_t data_len, uint8_t *key, size_t key_len, uint8_t *output) {
-	if (key_len != 0x20) {
-		FATAL("key_len is not 0x20\n");
-	}
-
-#if DEBUG_CRYPTO
-	printf("-- hmac-sha256 --\n");
-	printf("data:\n");
-	hex_dump(0, data, data_len);
-	printf("key:\n");
-	hex_dump(0, key, key_len);
-#endif
-
-	uint8_t ipad[64] = { 0 };
-	uint8_t opad[64] = { 0 };
-	memcpy(ipad, key, key_len);
-	memcpy(opad, key, key_len);
-
-	for (int i = 0; i < 64; ++i) {
-		ipad[i] ^= 0x36;
-		opad[i] ^= 0x5c;
-	}
-
-	mbedtls_sha256_context ctx;
-	mbedtls_sha256_init(&ctx);
-
-	uint8_t tmp[0x20] = { 0 };
-
-	// Inner sha-256
-	mbedtls_sha256_starts(&ctx, 0);
-	mbedtls_sha256_update(&ctx, ipad, 64);
-	mbedtls_sha256_update(&ctx, data, data_len);
-	mbedtls_sha256_finish(&ctx, tmp);
-
-	// Outer sha-256
-	mbedtls_sha256_starts(&ctx, 0);
-	mbedtls_sha256_update(&ctx, opad, 64);
-	mbedtls_sha256_update(&ctx, tmp, 32);
-	mbedtls_sha256_finish(&ctx, output);
-
-	mbedtls_sha256_free(&ctx);
-
-#if DEBUG_CRYPTO
-	printf("output:\n");
-	hex_dump(0, output, 0x20);
-#endif
+    if (addr < sizeof(control)) {
+        control[addr >> 2] = value;
+        return;
+    }
+    LOG_WARN("Bigmac::Write32 unmapped addr 0x%03x <= 0x%08x", addr, value);
 }
 
 void Bigmac::DoFunc(int channel) {
-	bigmac_regs *ch = &channels[channel];
-	switch (ch->func) {
-	case 0x2080:
-	case 0: { // memcpy
-		uint8_t *tmp = new uint8_t [ch->sz];
-		mem->Read(ch->src, ch->sz, tmp);
-		mem->Write(ch->dst, ch->sz, tmp);
-		delete[] tmp;
-		break;
-	}
-	case 0xC: { // memset
-		uint8_t value = ch->unk[(0x104 - 0x28) / 4] & 0xFF; // TODO
-		uint8_t *tmp = new uint8_t [ch->sz];
-		memset(tmp, value, ch->sz);
-		mem->Write(ch->dst, ch->sz, tmp);
-		delete[] tmp;
-		break;
-	}
-	case 0x2093:  { // sha256
-		uint8_t *data = new uint8_t [ch->sz];
-		mem->Read(ch->src, ch->sz, data);
-		uint8_t hash[256/8] = {0};
-		mbedtls_sha256(data, ch->sz, hash, 0);
-		mem->Write(ch->dst, sizeof(hash), hash);
+    if (!mem || channel < 0 || channel > 1) {
+        return;
+    }
+    bigmac_regs *ch = &channels[channel];
+    const uint32_t op = ch->func & 0x3Fu;
+    const uint32_t key_sel = (ch->func >> 8) & 3u;
+    size_t key_bits = 128;
+    if (key_sel == 2) key_bits = 192;
+    else if (key_sel == 3) key_bits = 256;
 
-#if DEBUG_CRYPTO
-		printf("-- sha256 --\n");
-		printf("input:\n");
-		hex_dump(0, data, ch->sz);
-		printf("hash:\n");
-		hex_dump(0, hash, sizeof(hash));
-#endif
+    // Explicit legacy functions and decoded DMAC5 opcodes
+    if (ch->func == 0 || ch->func == 0x2080 || op == 0x00) {
+        if (ch->sz == 0) return;
+        std::vector<uint8_t> data(ch->sz);
+        if (mem->TryRead(ch->src, ch->sz, data.data())) {
+            mem->TryWrite(ch->dst, ch->sz, data.data());
+        }
+        return;
+    }
 
-		delete[] data;
+    if (ch->func == 0x0C || op == 0x0C) {
+        if (ch->sz == 0) return;
+        const uint8_t fill = static_cast<uint8_t>((control2[1] != 0 ? control2[1] : ch->src) & 0xFFu);
+        std::vector<uint8_t> data(ch->sz, fill);
+        mem->TryWrite(ch->dst, ch->sz, data.data());
+        return;
+    }
 
-		break;
-	}
-	case 0x218a:    // aes-128-cbc decrypt w/o keyslot
-	case 0x238a:  { // aes-256-cbc decrypt w/o keyslot
-		int keybits;
-		if (ch->func == 0x218a)
-			keybits = 128;
-		else if (ch->func == 0x238a)
-			keybits = 256;
-		else
-			FATAL("keybits\n");
+    if (op == 0x03) { // SHA-1
+        std::vector<uint8_t> data(ch->sz);
+        if (ch->sz == 0 || mem->TryRead(ch->src, ch->sz, data.data())) {
+            uint8_t hash[20] = {};
+            mbedtls_sha1(data.data(), ch->sz, hash);
+            mem->TryWrite(ch->dst, sizeof(hash), hash);
+        }
+        return;
+    }
 
-		uint8_t *data = new uint8_t [ch->sz];
-		uint8_t *iv = new uint8_t [16];
+    if (ch->func == 0x2093 || op == 0x13) { // SHA-256
+        std::vector<uint8_t> data(ch->sz);
+        if (ch->sz == 0 || mem->TryRead(ch->src, ch->sz, data.data())) {
+            uint8_t hash[32] = {};
+            mbedtls_sha256(data.data(), ch->sz, hash, 0);
+            mem->TryWrite(ch->dst, sizeof(hash), hash);
+        }
+        return;
+    }
 
-		mem->Read(ch->src, ch->sz, data);
-		mem->Read(ch->iv, 16, iv);
+    if (op == 0x23) { // HMAC-SHA1
+        uint8_t key[32] = {};
+        ResolveKey(ch, key_sel == 0 ? 32 : key_bits / 8, key);
+        std::vector<uint8_t> data(ch->sz);
+        if (ch->sz == 0 || mem->TryRead(ch->src, ch->sz, data.data())) {
+            uint8_t digest[20] = {};
+            ComputeHmacSha1(data.data(), ch->sz, key, key_sel == 0 ? 20 : key_bits / 8, digest);
+            mem->TryWrite(ch->dst, sizeof(digest), digest);
+        }
+        return;
+    }
 
-		aes_decrypt(data, ch->sz, control2, keybits, iv);
+    if (ch->func == 0x20b3 || op == 0x33) { // HMAC-SHA256
+        uint8_t key[32] = {};
+        const size_t klen = (key_sel == 0) ? 32 : (key_bits / 8);
+        ResolveKey(ch, klen, key);
+        std::vector<uint8_t> data(ch->sz);
+        if (ch->sz == 0 || mem->TryRead(ch->src, ch->sz, data.data())) {
+            uint8_t digest[32] = {};
+            ComputeHmacSha256(data.data(), ch->sz, key, klen, digest);
+            mem->TryWrite(ch->dst, sizeof(digest), digest);
+        }
+        return;
+    }
 
-		mem->Write(ch->iv, 16, iv);
-		mem->Write(ch->dst, ch->sz, data);
-		
-		delete[] data;
-		delete[] iv;
-		break;
-	}
-	case 0x21a1: { // aes-128-ctr
-		uint8_t *data = new uint8_t [ch->sz];
-		uint8_t iv[16];
+    if (op == 0x01 || op == 0x09) { // AES-ECB enc/dec
+        uint8_t key[32] = {};
+        ResolveKey(ch, key_bits / 8, key);
+        std::vector<uint8_t> data(ch->sz);
+        if (mem->TryRead(ch->src, ch->sz, data.data())) {
+            if (AesEcbCrypt(data.data(), ch->sz, key, key_bits, op == 0x01)) {
+                mem->TryWrite(ch->dst, ch->sz, data.data());
+            }
+        }
+        return;
+    }
 
-		mem->Read(ch->src, ch->sz, data);
-		mem->Read(ch->iv, 16, iv);
+    if (ch->func == 0x218a || ch->func == 0x238a || op == 0x02 || op == 0x0A) { // AES-CBC enc/dec
+        uint8_t key[32] = {};
+        uint8_t iv[16] = {};
+        ResolveKey(ch, key_bits / 8, key);
+        if (ch->iv != 0) {
+            mem->TryRead(ch->iv, sizeof(iv), iv);
+        } else {
+            std::memcpy(iv, reinterpret_cast<const uint8_t *>(control2) + 32, sizeof(iv));
+        }
+        std::vector<uint8_t> data(ch->sz);
+        if (mem->TryRead(ch->src, ch->sz, data.data())) {
+            if (AesCbcCrypt(data.data(), ch->sz, key, key_bits, iv, op == 0x02)) {
+                if (ch->iv != 0) {
+                    mem->TryWrite(ch->iv, sizeof(iv), iv);
+                }
+                mem->TryWrite(ch->dst, ch->sz, data.data());
+            }
+        }
+        return;
+    }
 
-		aes_ctr(data, ch->sz, control2, 128, iv);
+    if (ch->func == 0x21a1 || op == 0x21) { // AES-CTR
+        uint8_t key[32] = {};
+        uint8_t iv[16] = {};
+        ResolveKey(ch, key_bits / 8, key);
+        if (ch->iv != 0) {
+            mem->TryRead(ch->iv, sizeof(iv), iv);
+        } else {
+            std::memcpy(iv, reinterpret_cast<const uint8_t *>(control2) + 32, sizeof(iv));
+        }
+        std::vector<uint8_t> data(ch->sz);
+        if (mem->TryRead(ch->src, ch->sz, data.data())) {
+            if (AesCtrCrypt(data.data(), ch->sz, key, key_bits, iv)) {
+                if (ch->iv != 0) {
+                    mem->TryWrite(ch->iv, sizeof(iv), iv);
+                }
+                mem->TryWrite(ch->dst, ch->sz, data.data());
+            }
+        }
+        return;
+    }
 
-		mem->Write(ch->iv, 16, iv); // ?? not sure
-		mem->Write(ch->dst, ch->sz, data);
-
-		delete[] data;
-		break;
-	}
-	case 0x20b3: { // HMAC-SHA256
-		uint8_t *data = new uint8_t [ch->sz];
-		uint8_t key[0x20];
-		uint8_t digest[0x20];
-
-		memcpy(key, control2, 0x20);
-		mem->Read(ch->src, ch->sz, data);
-
-		hmac_sha256(data, ch->sz, key, 0x20, digest);
-
-		mem->Write(ch->dst, 0x20, digest);
-
-		delete[] data;
-		break;
-	}
-	default:
-		FATAL("unknown function 0x%x\n", ch->func);
-	}
+    LOG_WARN("Bigmac::DoFunc unknown func 0x%08x (ch=%d src=0x%08x dst=0x%08x sz=0x%x)",
+             ch->func, channel, ch->src, ch->dst, ch->sz);
 }

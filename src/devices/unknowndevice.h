@@ -1,12 +1,21 @@
 #pragma once
 
-#include "device.h"
+#include <cstdint>
 
-class UnknownDevice: public Device {
+#include "../device.h"
+
+class EEPROM;
+
+class UnknownDevice : public Device {
 public:
-	UnknownDevice(uint32_t base);
-	uint32_t Read32(uint32_t addr);
-	void Write32(uint32_t addr, uint32_t value);
+    explicit UnknownDevice(uint32_t base, EEPROM *keyring_ = nullptr);
+    void Reset();
+
+    uint32_t Read32(uint32_t addr) override;
+    void Write32(uint32_t addr, uint32_t value) override;
+
 private:
-	uint32_t my_base;
+    uint32_t my_base;
+    EEPROM *keyring = nullptr;
+    uint32_t regs[0x400] = {};
 };

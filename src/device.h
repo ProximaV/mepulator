@@ -4,6 +4,8 @@
 
 class Device {
 public:
+	virtual ~Device() = default;
+
 	virtual uint8_t Read8(uint32_t addr);
 	virtual uint16_t Read16(uint32_t addr);
 	virtual uint32_t Read32(uint32_t addr);
