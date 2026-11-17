@@ -86,12 +86,21 @@ add_test(NAME mepulator_tests COMMAND mepulator_tests)
 
 if(DEFINED ENV{IDA_SDK_DIR})
     set(_DEFAULT_IDA_SDK_DIR "$ENV{IDA_SDK_DIR}")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../include/idd.hpp")
+    set(_DEFAULT_IDA_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 else()
     set(_DEFAULT_IDA_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../ida-sdk-main/src")
 endif()
 set(IDA_SDK_DIR "${_DEFAULT_IDA_SDK_DIR}" CACHE PATH "Path to IDA SDK src directory")
 
-if(EXISTS "${IDA_SDK_DIR}/include/idd.hpp" AND EXISTS "${IDA_SDK_DIR}/lib/x64_win_vc_64/ida.lib")
+set(_IDA_LIB_PATH "")
+if(EXISTS "${IDA_SDK_DIR}/lib/x64_win_vc_64/ida.lib")
+    set(_IDA_LIB_PATH "${IDA_SDK_DIR}/lib/x64_win_vc_64/ida.lib")
+elseif(EXISTS "${IDA_SDK_DIR}/lib/x64_win_64/ida.lib")
+    set(_IDA_LIB_PATH "${IDA_SDK_DIR}/lib/x64_win_64/ida.lib")
+endif()
+
+if(EXISTS "${IDA_SDK_DIR}/include/idd.hpp" AND _IDA_LIB_PATH)
     add_library(mepdbg SHARED src/ida_dbg_plugin.cpp)
     set_target_properties(mepdbg PROPERTIES
         PREFIX ""
@@ -107,6 +116,6 @@ if(EXISTS "${IDA_SDK_DIR}/include/idd.hpp" AND EXISTS "${IDA_SDK_DIR}/lib/x64_wi
     )
     target_link_libraries(mepdbg PRIVATE
         mepulator_core
-        "${IDA_SDK_DIR}/lib/x64_win_vc_64/ida.lib"
+        "${_IDA_LIB_PATH}"
     )
 endif()

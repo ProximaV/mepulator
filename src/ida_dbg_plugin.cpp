@@ -38,15 +38,19 @@ constexpr size_t kRegIdxPc = 16;
 constexpr size_t kRegIdxCfg = 16 + 21;
 constexpr size_t kRegIdxIvb = 48;
 constexpr register_class_t RC_INTC    = 0x04;
+constexpr register_class_t RC_TIMER   = 0x08;
+constexpr register_class_t RC_DSU     = 0x10;
 
 const char *const kRegClasses[] = {
     "General registers",
     "Control registers",
     "INTC registers",
+    "Timer/Counter",
+    "DSU registers",
     nullptr
 };
 
-const register_info_t kRegisters[56] = {
+const register_info_t kRegisters[] = {
     // 0..15: GPRs
     { "$0",   REGISTER_ADDRESS,                           RC_GENERAL, dt_dword, nullptr, 0 },
     { "$1",   REGISTER_ADDRESS,                           RC_GENERAL, dt_dword, nullptr, 0 },
@@ -110,7 +114,62 @@ const register_info_t kRegisters[56] = {
     { "$ilr1", 0,                                         RC_INTC,    dt_dword, nullptr, 0 },
     { "$ilr2", 0,                                         RC_INTC,    dt_dword, nullptr, 0 },
     { "$ilr3", 0,                                         RC_INTC,    dt_dword, nullptr, 0 },
+
+    // 56: Control-bus INTC IVR
+    { "$ivr",  0,                                         RC_INTC,    dt_dword, nullptr, 0 },
+
+    // 57..80: Control-bus Timer/Counter channels 0..3 (0x0400..0x0435)
+    { "$cnt0", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cmp0", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$ten0", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcr0", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tis0", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcd0", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cnt1", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cmp1", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$ten1", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcr1", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tis1", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcd1", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cnt2", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cmp2", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$ten2", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcr2", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tis2", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcd2", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cnt3", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$cmp3", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$ten3", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcr3", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tis3", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+    { "$tcd3", 0,                                         RC_TIMER,   dt_dword, nullptr, 0 },
+
+    // 81..92: Control-bus Debug Support Unit (DSU, 0x0800..0x0A05)
+    { "$dcr",  0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$ibs",  0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$dbs",  0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$tcr",  0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$iba0", REGISTER_ADDRESS,                          RC_DSU,     dt_dword, nullptr, 0 },
+    { "$ibc0", 0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$ibm0", 0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$dba0", REGISTER_ADDRESS,                          RC_DSU,     dt_dword, nullptr, 0 },
+    { "$dbc0", 0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$dbm0", 0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$db0",  0,                                         RC_DSU,     dt_dword, nullptr, 0 },
+    { "$dbu0", 0,                                         RC_DSU,     dt_dword, nullptr, 0 },
 };
+
+constexpr uint32_t kExtraCbAddrs[] = {
+    0x0000u,
+    0x0400u, 0x0401u, 0x0402u, 0x0403u, 0x0404u, 0x0405u,
+    0x0410u, 0x0411u, 0x0412u, 0x0413u, 0x0414u, 0x0415u,
+    0x0420u, 0x0421u, 0x0422u, 0x0423u, 0x0424u, 0x0425u,
+    0x0430u, 0x0431u, 0x0432u, 0x0433u, 0x0434u, 0x0435u,
+    0x0800u, 0x0801u, 0x0802u, 0x0803u,
+    0x0900u, 0x0901u, 0x0902u,
+    0x0A00u, 0x0A01u, 0x0A02u, 0x0A04u, 0x0A05u,
+};
+static_assert(qnumber(kRegisters) == 56 + qnumber(kExtraCbAddrs), "kRegisters / kExtraCbAddrs size mismatch");
 
 const uchar kBreakInsnBytes[2] = { 0x32, 0x70 };
 
@@ -473,7 +532,8 @@ void mepdbg_plugmod_t::QueueStopEvent(const StopInfo &stop, bool from_single_ste
             exc.code = 5;
             exc.can_cont = true;
             exc.ea = stop.pc;
-            exc.info = stop.reason == StopReason::DbreakInsn ? "dbreak instruction" : "break instruction";
+            exc.info.sprnt("Debug exception (DBG=0x%08X DEPC=0x%08X)",
+                           machine.cpu.control.dbg, machine.cpu.control.depc);
         }
         break;
     case StopReason::Halt:
@@ -491,7 +551,8 @@ void mepdbg_plugmod_t::QueueStopEvent(const StopInfo &stop, bool from_single_ste
             exc.code = 5;
             exc.can_cont = true;
             exc.ea = stop.pc;
-            exc.info.sprnt("SWI %u", stop.detail);
+            exc.info.sprnt("SWI %u ($4=%u, $1=0x%08X)",
+                           stop.detail, machine.cpu.r[4], machine.cpu.r[1]);
         }
         break;
     case StopReason::UnmappedMemory:
@@ -530,6 +591,9 @@ uint32_t mepdbg_plugmod_t::ReadRegByIdx(size_t idx) const {
     if (idx < 56) {
         return machine.cpu.GetIntc(static_cast<uint32_t>(idx - 48));
     }
+    if (idx < qnumber(kRegisters)) {
+        return machine.cpu.ReadControlBusRaw(kExtraCbAddrs[idx - 56]);
+    }
     return 0;
 }
 
@@ -539,11 +603,15 @@ void mepdbg_plugmod_t::WriteRegByIdx(size_t idx, uint32_t val) {
         return;
     }
     if (idx < 48) {
-        machine.cpu.SetCR(static_cast<uint32_t>(idx - 16), val);
+        machine.cpu.SetCR(static_cast<uint32_t>(idx - 16), val, true);
         return;
     }
     if (idx < 56) {
         machine.cpu.SetIntc(static_cast<uint32_t>(idx - 48), val);
+        return;
+    }
+    if (idx < qnumber(kRegisters)) {
+        machine.cpu.WriteControlBusRaw(kExtraCbAddrs[idx - 56], val);
     }
 }
 
@@ -551,8 +619,9 @@ void mepdbg_plugmod_t::WriteRegAndInvalidate(size_t idx, uint32_t val) {
     const uint32_t prev_pc = machine.cpu.control.pc;
     const uint32_t prev_ivb = machine.cpu.intc.ivb;
     WriteRegByIdx(idx, val);
-    // Writing $cfg (or any indirect CSR/control mutation) can update $ivb / cache state.
+    // Writing $cfg, $ivr, or indirect CSR/control mutation can update $ivb / cache / interrupt state.
     if (idx == kRegIdxCfg
+        || idx >= 56
         || (idx != kRegIdxPc && machine.cpu.control.pc != prev_pc)
         || (idx != kRegIdxIvb && machine.cpu.intc.ivb != prev_ivb)) {
         invalidate_dbg_state(DBGINV_REGS | DBGINV_MEMORY);
@@ -581,37 +650,33 @@ bool mepdbg_plugmod_t::ExecuteCommand(const char *cmdline, std::string &out) {
     if (cmd == "help" || cmd == "?") {
         out =
             "[mepdbg] Commands:\n"
-            "  status        - Print CPU/INTC status\n"
-            "  intc          - Print INTC and PSW registers\n"
-            "  irq <n>       - Raise hardware IRQ n (0..31)\n"
-            "  reset         - Reset machine and reload IDB segments\n"
-            "  eeprom <path> - Load EEPROM keyring file\n"
-            "  step [n]      - Execute n instructions (default 1)\n";
+            "  status         - Print CPU/INTC/DBG/Timer status\n"
+            "  intc           - Print INTC (IVB/IVR/ISR/IER/IET/ILR0..3) and PSW\n"
+            "  csr [name|n]   - Print CSRs and decoded PSW/EXC/DBG/CFG/RPE flags\n"
+            "  timer          - Print Timer/Counter Ch0..Ch3 state\n"
+            "  dsu            - Print DSU break/trace state and $dbg/$depc\n"
+            "  cb <hex> [v]   - Read/write control bus address (bypasses DM check)\n"
+            "  irq <n>        - Raise hardware IRQ n (0..31)\n"
+            "  swi [0..3|mode]- Inspect SWI state, raise SIP0..3, or set mode <auto|arch|hle|trap>\n"
+            "  signal [mask]  - Inspect/set HLE signaling flags (used by SWI $4=2,3)\n"
+            "  applet [pc][sp]- Arm PSW.IEC|HIE|SIE0, IVB/IVR/ILR for direct applet execution\n"
+            "  nmi            - Assert NMI input\n"
+            "  dint           - Assert DSU debug interrupt (DINT)\n"
+            "  reset          - Reset machine and reload IDB segments\n"
+            "  eeprom <path>  - Load EEPROM keyring file\n"
+            "  step [n]       - Execute n instructions (default 1)\n";
         return true;
     }
     if (cmd == "status") {
         out = machine.FormatStatus();
         return true;
     }
-    if (cmd == "intc") {
-        qsnprintf(buf, sizeof(buf),
-            "IVB=0x%08X ISR=0x%08X IER=0x%08X IET=0x%08X\n"
-            "ILR0=0x%08X ILR1=0x%08X ILR2=0x%08X ILR3=0x%08X PSW=0x%08X",
-            machine.cpu.intc.ivb, machine.cpu.intc.isr,
-            machine.cpu.intc.ier, machine.cpu.intc.iet,
-            machine.cpu.intc.ilr0, machine.cpu.intc.ilr1,
-            machine.cpu.intc.ilr2, machine.cpu.intc.ilr3,
-            machine.cpu.control.psw);
-        out = buf;
-        return true;
-    }
-    if (cmd.rfind("irq ", 0) == 0) {
-        const uint32_t irq = static_cast<uint32_t>(std::strtoul(cmd.c_str() + 4, nullptr, 0));
-        machine.cpu.RaiseIrq(irq & 31u);
-        qsnprintf(buf, sizeof(buf),
-            "[mepdbg] Raised IRQ %u (ISR=0x%08X IER=0x%08X)",
-            irq & 31u, machine.cpu.intc.isr, machine.cpu.intc.ier);
-        out = buf;
+    if (machine.cpu.TryHandleCoreCommand(cmd, &out)) {
+        if (cmd.rfind("irq ", 0) == 0 || cmd == "nmi" || cmd == "dint" ||
+            cmd.rfind("cb ", 0) == 0 || cmd.rfind("swi ", 0) == 0 ||
+            cmd == "applet" || cmd.rfind("applet ", 0) == 0) {
+            invalidate_dbg_state(DBGINV_REGS);
+        }
         return true;
     }
     if (cmd == "reset") {
@@ -867,7 +932,7 @@ ssize_t mepdbg_plugmod_t::HandleIddEvent(ssize_t code, va_list va) {
                     } else if (stop.reason != StopReason::None) {
                         is_running = false;
                         QueueStopEvent(stop, false);
-                    } else if (machine.cpu.sleeping && timeout_ms > 0) {
+                    } else if ((machine.cpu.sleeping || machine.cpu.halted) && timeout_ms > 0) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(std::min(timeout_ms, 25)));
                     }
                 }
@@ -1213,7 +1278,7 @@ error_t idaapi idc_mepdbg_run_to(idc_value_t *argv, idc_value_t *r) {
         if (cur_pc == target || (has_alias && cur_pc == target_alias)) {
             break;
         }
-        if (stop.reason != StopReason::None || pm->machine.cpu.sleeping) {
+        if (stop.reason != StopReason::None || pm->machine.cpu.sleeping || pm->machine.cpu.halted) {
             break;
         }
     }

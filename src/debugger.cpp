@@ -172,7 +172,7 @@ bool Debugger::WriteGdbReg(uint32_t idx, uint32_t val) {
         return true;
     }
     if (idx < 48) {
-        cpu->SetCR(idx - 16, val);
+        cpu->SetCR(idx - 16, val, true);
         return true;
     }
     if (idx < 56) {
@@ -277,6 +277,11 @@ std::string Debugger::HandleMonitorCommand(const std::string &cmd) {
     while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
         trimmed.pop_back();
     }
+    size_t start = 0;
+    while (start < trimmed.size() && std::isspace(static_cast<unsigned char>(trimmed[start]))) {
+        ++start;
+    }
+    trimmed = trimmed.substr(start);
 
     if (trimmed == "status") {
         if (machine) {
@@ -284,28 +289,7 @@ std::string Debugger::HandleMonitorCommand(const std::string &cmd) {
         }
         char buf[128];
         std::snprintf(buf, sizeof(buf), "PC=0x%08x SP=0x%08x LP=0x%08x PSW=0x%08x\n",
-                      cpu->control.pc, cpu->r[MEP_REG_sp], cpu->control.lp, cpu->control.psw);
-        return HexEncodeString(buf);
-    }
-
-    if (trimmed == "intc") {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf),
-                      "IVB=0x%08x ISR=0x%08x IER=0x%08x IET=0x%08x\n"
-                      "ILR0=0x%08x ILR1=0x%08x ILR2=0x%08x ILR3=0x%08x\n",
-                      cpu->intc.ivb, cpu->intc.isr, cpu->intc.ier, cpu->intc.iet,
-                      cpu->intc.ilr0, cpu->intc.ilr1, cpu->intc.ilr2, cpu->intc.ilr3);
-        return HexEncodeString(buf);
-    }
-
-    if (trimmed.rfind("irq ", 0) == 0) {
-        unsigned long irq = std::strtoul(trimmed.c_str() + 4, nullptr, 0);
-        if (irq >= 32) {
-            return HexEncodeString("Error: irq must be 0..31\n");
-        }
-        cpu->RaiseIrq(static_cast<uint32_t>(irq));
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "Raised IRQ %lu (ISR=0x%08x)\n", irq, cpu->intc.isr);
+                      cpu->control.pc, cpu->r[MEP_REG_sp], cpu->control.lp, cpu->GetCR(16));
         return HexEncodeString(buf);
     }
 
@@ -326,15 +310,28 @@ std::string Debugger::HandleMonitorCommand(const std::string &cmd) {
         return HexEncodeString(oss.str());
     }
 
-    return HexEncodeString("Commands: status | intc | irq <0..31> | reset | keyring\n");
+    std::string core_out;
+    if (cpu->TryHandleCoreCommand(trimmed, &core_out)) {
+        if (!core_out.empty() && core_out.back() != '\n') {
+            core_out.push_back('\n');
+        }
+        return HexEncodeString(core_out);
+    }
+
+    return HexEncodeString(
+        "Commands: status | intc | csr [name|idx] | timer | dsu | cb <hex> [val] | "
+        "irq <0..31> | swi [0..3|mode <auto|arch|hle|trap>] | signal [mask] | "
+        "applet [entry] [sp] | nmi | dint | reset | keyring\n");
 }
 
 std::string Debugger::HandleContinue(bool single_step) {
     if (!cpu) return "E01";
 
     if (single_step) {
-        if (cpu->sleeping) {
+        if (cpu->sleeping || cpu->halted) {
             cpu->sleeping = false;
+            cpu->halted = false;
+            cpu->control.psw &= ~kPswBitHalt;
         }
         StopInfo info = cpu->Step(true);
         resume_ignore_bpt = (info.reason == StopReason::Breakpoint);

@@ -146,17 +146,27 @@ StopInfo F00DMachine::RunSteps(uint64_t max_steps,
 }
 
 std::string F00DMachine::FormatStatus() const {
-    char buf[512];
+    const uint32_t ivr = cpu.GetEffectiveIvr();
+    const uint32_t psw = cpu.GetCR(16);
+    const uint32_t exc = cpu.GetCR(20);
+    const uint32_t ten_mask =
+        ((cpu.timers[0].ten & 1u) << 0) | ((cpu.timers[1].ten & 1u) << 1) |
+        ((cpu.timers[2].ten & 1u) << 2) | ((cpu.timers[3].ten & 1u) << 3);
+    char buf[640];
     std::snprintf(
         buf, sizeof(buf),
         "PC=0x%08X SP=0x%08X LP=0x%08X TP=0x%08X GP=0x%08X PSW=0x%08X\n"
         "R0=0x%08X R1=0x%08X R2=0x%08X R3=0x%08X EPC=0x%08X EXC=0x%08X\n"
-        "INTC IVB=0x%08X ISR=0x%08X IER=0x%08X IET=0x%08X steps=%llu%s",
+        "INTC IVB=0x%08X IVR=0x%08X ISR=0x%08X IER=0x%08X IET=0x%08X\n"
+        "DBG=0x%08X DEPC=0x%08X T_EN=0x%X steps=%llu%s%s%s",
         cpu.control.pc, cpu.r[MEP_REG_sp], cpu.control.lp, cpu.r[MEP_REG_tp],
-        cpu.r[MEP_REG_gp], cpu.control.psw,
-        cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], cpu.control.epc, cpu.control.exc,
-        cpu.intc.ivb, cpu.intc.isr, cpu.intc.ier, cpu.intc.iet,
+        cpu.r[MEP_REG_gp], psw,
+        cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], cpu.control.epc, exc,
+        cpu.intc.ivb, ivr, cpu.intc.isr, cpu.intc.ier, cpu.intc.iet,
+        cpu.control.dbg, cpu.control.depc, ten_mask,
         static_cast<unsigned long long>(cpu.step_count),
-        cpu.sleeping ? " [SLEEPING]" : "");
+        cpu.sleeping ? " [SLEEPING]" : "",
+        cpu.halted ? " [HALTED]" : "",
+        (cpu.control.dbg & kDbgBitDm) ? " [DEBUG]" : "");
     return std::string(buf);
 }

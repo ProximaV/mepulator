@@ -10,43 +10,33 @@
 
 namespace {
 
-inline uint32_t Load1Impl(Cpu *cpu, uint32_t addr) {
-    uint8_t val = 0;
-    cpu->mem.Read(addr, sizeof(val), &val);
-    return val;
+template <typename T>
+inline uint32_t LoadImpl(Cpu *cpu, uint32_t addr) {
+    T val = 0;
+    cpu->mem.Read(addr, sizeof(T), &val);
+    cpu->CheckDsuDataBreak(addr, sizeof(T), static_cast<uint32_t>(val), false);
+    return static_cast<uint32_t>(val);
 }
 
-inline uint32_t Load2Impl(Cpu *cpu, uint32_t addr) {
-    uint16_t val = 0;
-    cpu->mem.Read(addr, sizeof(val), &val);
-    return val;
+template <typename T>
+inline void StoreImpl(Cpu *cpu, uint32_t val, uint32_t addr) {
+    const T v = static_cast<T>(val);
+    cpu->mem.Write(addr, sizeof(T), &v);
+    cpu->CheckDsuDataBreak(addr, sizeof(T), static_cast<uint32_t>(v), true);
 }
 
-inline uint32_t Load4Impl(Cpu *cpu, uint32_t addr) {
-    uint32_t val = 0;
-    cpu->mem.Read(addr, sizeof(val), &val);
-    return val;
-}
-
-inline void Store1ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) {
-    uint8_t v = static_cast<uint8_t>(val);
-    cpu->mem.Write(addr, sizeof(v), &v);
-}
-
-inline void Store2ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) {
-    uint16_t v = static_cast<uint16_t>(val);
-    cpu->mem.Write(addr, sizeof(v), &v);
-}
-
-inline void Store4ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) {
-    cpu->mem.Write(addr, sizeof(val), &val);
-}
+inline uint32_t Load1Impl(Cpu *cpu, uint32_t addr) { return LoadImpl<uint8_t>(cpu, addr); }
+inline uint32_t Load2Impl(Cpu *cpu, uint32_t addr) { return LoadImpl<uint16_t>(cpu, addr); }
+inline uint32_t Load4Impl(Cpu *cpu, uint32_t addr) { return LoadImpl<uint32_t>(cpu, addr); }
+inline void Store1ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) { StoreImpl<uint8_t>(cpu, val, addr); }
+inline void Store2ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) { StoreImpl<uint16_t>(cpu, val, addr); }
+inline void Store4ValAddr(Cpu *cpu, uint32_t val, uint32_t addr) { StoreImpl<uint32_t>(cpu, val, addr); }
 
 inline void DoBranch(Cpu *cpu, uint32_t newpc) {
     const uint32_t target = newpc & ~1u;
     CRN(pc) = target;
     cpu->branched = true;
-    if ((cpu->control.rpc > 0 || cpu->erepeat_active) && !cpu->InActiveRepeatRange(target)) {
+    if (cpu->IsRepeatActive() && !cpu->InActiveRepeatRange(target)) {
         cpu->CancelRepeat();
     }
 }

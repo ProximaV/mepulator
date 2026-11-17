@@ -96,7 +96,9 @@ def run_tests():
         reg_names_to_check = [
             "$0", "$sp", "$tp", "$gp", "r0", "r15",
             "$pc", "pc", "$lp", "$psw", "$cfg", "$r3", "$h-csr-3",
-            "$ivb", "$isr", "$ier", "$iet", "$ilr0", "$ilr1", "$ilr2", "$ilr3",
+            "$ivb", "$ivr", "$isr", "$ier", "$iet", "$ilr0", "$ilr1", "$ilr2", "$ilr3",
+            "$cnt0", "$cmp0", "$ten0", "$tcr0", "$tis0", "$tcd0",
+            "$dcr", "$ibs", "$dbs", "$iba0", "$dba0", "$db0",
         ]
         for rname in reg_names_to_check:
             ri = ida_idp.reg_info_t()
@@ -249,7 +251,9 @@ def run_tests():
             ("$0", 0x12345678),
             ("$sp", 0x0081FF00),
             ("$ivb", 0x00800100),
+            ("$ivr", 0x00000400),
             ("$ier", 0x00000005),
+            ("$cmp0", 0x00001234),
         ]
         for rname, val in reg_rw_cases:
             prev = eval_idc(f'mepdbg_get_reg("{rname}")')
@@ -284,12 +288,21 @@ def run_tests():
         # 9. rexec / mepdbg_exec verification
         status_out = eval_idc('mepdbg_exec("status")')
         intc_out = eval_idc('mepdbg_exec("intc")')
+        timer_out = eval_idc('mepdbg_exec("timer")')
+        dsu_out = eval_idc('mepdbg_exec("dsu")')
+        csr_out = eval_idc('mepdbg_exec("csr")')
         irq_out = eval_idc('mepdbg_exec("irq 0")')
         report["rexec"]["status"] = status_out
         report["rexec"]["intc"] = intc_out
+        report["rexec"]["timer"] = timer_out
+        report["rexec"]["dsu"] = dsu_out
+        report["rexec"]["csr"] = csr_out
         report["rexec"]["irq 0"] = irq_out
         assert "PC=" in status_out, f"Unexpected status output: {status_out!r}"
-        assert "IVB=" in intc_out and "IER=" in intc_out, f"Unexpected intc output: {intc_out!r}"
+        assert "IVB=" in intc_out and "IVR=" in intc_out and "IER=" in intc_out, f"Unexpected intc output: {intc_out!r}"
+        assert "CH0: CNT=" in timer_out, f"Unexpected timer output: {timer_out!r}"
+        assert "DBA0=" in dsu_out, f"Unexpected dsu output: {dsu_out!r}"
+        assert "RPE.ELR=" in csr_out, f"Unexpected csr output: {csr_out!r}"
         assert "Raised IRQ 0" in irq_out, f"Unexpected irq output: {irq_out!r}"
 
         assert eval_idc("mepdbg_stop()") == 1

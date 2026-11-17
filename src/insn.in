@@ -228,7 +228,7 @@ lbu_disp16 {
 0111_nnnn_iiii_101I
 imm5 = I||iiii
 ldc {
-	GR(n) = CR(imm5);
+	GR(n) = cpu->GetCR(imm5);
 }
 
 
@@ -440,10 +440,7 @@ sh_disp16 {
 
 0111_0000_0110_0010
 sleep {
-	cpu->sleeping = true;
-	if (cpu->stop_on_halt) {
-		cpu->pending_stop = StopInfo{StopReason::Halt, cpu->cur_pc, 0, false};
-	}
+	cpu->EnterSleep();
 }
 
 
@@ -918,17 +915,13 @@ synccp {
 
 0111_0000_0010_0010
 halt {
-	if (cpu->stop_on_halt) {
-		cpu->pending_stop = StopInfo{StopReason::Halt, cpu->cur_pc, 0, false};
-	}
+	cpu->EnterHalt();
 }
 
 
 0111_0000_0011_0010
 break_insn {
-	if (cpu->stop_on_break) {
-		cpu->pending_stop = StopInfo{StopReason::BreakInsn, cpu->cur_pc, 0, false};
-	}
+	cpu->TriggerBreak(cpu->cur_pc);
 }
 
 
@@ -940,7 +933,7 @@ dret {
 
 0111_0000_0011_0011
 dbreak {
-	cpu->pending_stop = StopInfo{StopReason::DbreakInsn, cpu->cur_pc, 0, false};
+	cpu->TriggerDbreak(cpu->cur_pc);
 }
 
 
